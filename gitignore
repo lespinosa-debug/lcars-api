@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.env
+files/
+files.zip
+test.js

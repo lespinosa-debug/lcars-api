@@ -1,11 +1,13 @@
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
 const cors = require('cors');
+const twilio = require('twilio');
 
 const app = express();
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 const LCARS_SYSTEM = `You are LCARS — Library Computer Access and Retrieval System for Luis Espinosa (LRE).
 Video Engineer & Creative Director, Coral Springs FL. Frost Florida. Office at 701 Boutwell.
@@ -186,6 +188,93 @@ app.get('/api/events', (req, res) => {
 app.get('/api/store', (req, res) => {
   res.json({ ...store, updated: new Date().toISOString() });
 });
+
+// ── SMS / TWILIO BRIDGE ───────────────────────────────────────────
+
+app.post('/api/sms', async (req, res) => {
+  const inbound = req.body.Body?.trim() || '';
+  const from = req.body.From || '';
+  const twilioNumber = process.env.TWILIO_PHONE_NUMBER;
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const myNumber = process.env.MY_PHONE_NUMBER; // your personal number - only you can use this
+
+  console.log(`📱 SMS from ${from}: ${inbound}`);
+
+  // Only respond to your own number
+  if (myNumber && from !== myNumber) {
+    return res.type('text/xml').send('<Response><Message>LCARS: Unauthorized.</Message></Response>');
+  }
+
+  const lower = inbound.toLowerCase();
+  let reply = '';
+
+  try {
+    // COMMAND PARSING
+    if (lower.startsWith('/nugget ')) {
+      const text = inbound.slice(8).trim();
+      store.nuggets.unshift({ text, date: new Date().toISOString().slice(0,10), source: 'sms', id: Date.now() });
+      reply = `💡 NUGGET LOGGED: "${text}" — visible in LCARS within 30s`;
+
+    } else if (lower.startsWith('/task ')) {
+      const text = inbound.slice(6).trim();
+      const priority = lower.includes('high') ? 'HIGH' : lower.includes('low') ? 'LOW' : 'MED';
+      store.tasks.unshift({ text, priority, done: false, date: new Date().toISOString().slice(0,10), source: 'sms', id: Date.now() });
+      reply = `✅ TASK ADDED [${priority}]: "${text}" — visible in LCARS within 30s`;
+
+    } else if (lower.startsWith('/remind ')) {
+      const text = inbound.slice(8).trim();
+      store.tasks.unshift({ text: `🔔 ${text}`, priority: 'HIGH', done: false, date: new Date().toISOString().slice(0,10), source: 'sms-remind', id: Date.now() });
+      reply = `🔔 REMINDER LOGGED: "${text}"`;
+
+    } else if (lower.startsWith('/cal ')) {
+      const text = inbound.slice(5).trim();
+      store.events.unshift({ title: text, date: new Date().toISOString().slice(0,10), source: 'sms', id: Date.now() });
+      reply = `📅 EVENT CAPTURED: "${text}" — add to calendar when ready`;
+
+    } else if (lower === '/brief' || lower === '/status') {
+      const now = new Date();
+      const h = now.getHours();
+      const tod = h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
+      const msg = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 150,
+        system: LCARS_SYSTEM,
+        messages: [{ role: 'user', content: `Quick ${tod} briefing for Luis via SMS. Max 3 bullet points, plain text no markdown, keep it short.` }]
+      });
+      reply = msg.content[0].text;
+
+    } else if (lower === '/nuggets') {
+      const recent = store.nuggets.slice(0, 3).map((n,i) => `${i+1}. ${n.text}`).join('\n');
+      reply = `💡 RECENT NUGGETS:\n${recent || 'None yet'}`;
+
+    } else if (lower === '/tasks') {
+      const open = store.tasks.filter(t => !t.done).slice(0, 3).map((t,i) => `${i+1}. [${t.priority}] ${t.text}`).join('\n');
+      reply = `✅ OPEN TASKS:\n${open || 'All clear'}`;
+
+    } else if (lower === '/help') {
+      reply = `LCARS SMS COMMANDS:\n/nugget [idea]\n/task [item]\n/remind [text]\n/cal [event]\n/brief — status update\n/nuggets — recent ideas\n/tasks — open tasks\nAnything else = chat with Claude`;
+
+    } else {
+      // Free chat — route to Claude
+      const msg = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 200,
+        system: LCARS_SYSTEM + '\nYou are responding via SMS. Keep replies under 160 chars when possible. Plain text only.',
+        messages: [{ role: 'user', content: inbound }]
+      });
+      reply = msg.content[0].text;
+    }
+
+  } catch (err) {
+    console.error('SMS handler error:', err);
+    reply = 'LCARS ERROR: ' + err.message;
+  }
+
+  // Send reply via Twilio
+  res.type('text/xml').send(`<Response><Message>${reply}</Message></Response>`);
+});
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ LCARS API v2.1 on port ${PORT}`));
