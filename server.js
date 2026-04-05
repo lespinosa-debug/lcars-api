@@ -121,5 +121,71 @@ function parseDate(s) {
   return s;
 }
 
+// ── IN-MEMORY STORE (persists until server restarts) ──────────────
+const store = {
+  nuggets: [
+    { text: 'LCARS as main personal OS', date: '2026-04-04', source: 'session' },
+    { text: 'Stream Deck as Claude command surface', date: '2026-04-04', source: 'session' },
+    { text: 'Pi as always-on control brain', date: '2026-04-04', source: 'session' },
+    { text: 'Mac mini as full-time home AI server', date: '2026-04-05', source: 'claude-chat' },
+  ],
+  tasks: [],
+  events: [],
+};
+
+// ── NUGGETS ──────────────────────────────────────────────────────
+app.get('/api/nuggets', (req, res) => {
+  res.json({ nuggets: store.nuggets, count: store.nuggets.length });
+});
+
+app.post('/api/nuggets', (req, res) => {
+  const { text, source = 'claude-chat' } = req.body;
+  if (!text) return res.status(400).json({ error: 'text required' });
+  const nugget = { text, date: new Date().toISOString().slice(0, 10), source, id: Date.now() };
+  store.nuggets.unshift(nugget);
+  console.log(`💡 NUGGET: ${text}`);
+  res.json({ success: true, nugget });
+});
+
+// ── TASKS ─────────────────────────────────────────────────────────
+app.get('/api/tasks', (req, res) => {
+  res.json({ tasks: store.tasks, count: store.tasks.length });
+});
+
+app.post('/api/tasks', (req, res) => {
+  const { text, priority = 'MED', source = 'claude-chat' } = req.body;
+  if (!text) return res.status(400).json({ error: 'text required' });
+  const task = { text, priority, done: false, date: new Date().toISOString().slice(0, 10), source, id: Date.now() };
+  store.tasks.unshift(task);
+  console.log(`✅ TASK: ${text}`);
+  res.json({ success: true, task });
+});
+
+app.patch('/api/tasks/:id', (req, res) => {
+  const task = store.tasks.find(t => t.id === parseInt(req.params.id));
+  if (!task) return res.status(404).json({ error: 'not found' });
+  task.done = !task.done;
+  res.json({ success: true, task });
+});
+
+// ── EVENTS (from Claude chat) ─────────────────────────────────────
+app.post('/api/events', (req, res) => {
+  const { title, date, time, notes, source = 'claude-chat' } = req.body;
+  if (!title) return res.status(400).json({ error: 'title required' });
+  const event = { title, date, time, notes, source, id: Date.now() };
+  store.events.unshift(event);
+  console.log(`📅 EVENT: ${title} on ${date}`);
+  res.json({ success: true, event });
+});
+
+app.get('/api/events', (req, res) => {
+  res.json({ events: store.events, count: store.events.length });
+});
+
+// ── FULL STORE DUMP (for LCARS to poll) ──────────────────────────
+app.get('/api/store', (req, res) => {
+  res.json({ ...store, updated: new Date().toISOString() });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ LCARS API v2.1 on port ${PORT}`));
