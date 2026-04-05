@@ -123,17 +123,57 @@ function parseDate(s) {
   return s;
 }
 
-// ── IN-MEMORY STORE (persists until server restarts) ──────────────
-const store = {
+// ── PERSISTENT STORE (survives server restarts) ──────────────────
+const fs = require('fs');
+const STORE_PATH = process.env.STORE_PATH || '/tmp/lcars-store.json';
+
+const DEFAULT_STORE = {
   nuggets: [
-    { text: 'LCARS as main personal OS', date: '2026-04-04', source: 'session' },
-    { text: 'Stream Deck as Claude command surface', date: '2026-04-04', source: 'session' },
-    { text: 'Pi as always-on control brain', date: '2026-04-04', source: 'session' },
-    { text: 'Mac mini as full-time home AI server', date: '2026-04-05', source: 'claude-chat' },
+    { text: 'LCARS as main personal OS', date: '2026-04-04', source: 'session', id: 1 },
+    { text: 'Stream Deck as Claude command surface', date: '2026-04-04', source: 'session', id: 2 },
+    { text: 'Pi as always-on control brain', date: '2026-04-04', source: 'session', id: 3 },
+    { text: 'Mac mini as full-time home AI server', date: '2026-04-05', source: 'claude-chat', id: 4 },
+    { text: 'Twilio SMS bridge to Claude + LCARS', date: '2026-04-05', source: 'session', id: 5 },
   ],
   tasks: [],
   events: [],
 };
+
+function loadStore() {
+  try {
+    if (fs.existsSync(STORE_PATH)) {
+      const data = JSON.parse(fs.readFileSync(STORE_PATH, 'utf8'));
+      console.log(`✅ Store loaded from disk: ${data.nuggets?.length || 0} nuggets, ${data.tasks?.length || 0} tasks`);
+      return data;
+    }
+  } catch(e) { console.log('⚠️ Store load failed, using defaults:', e.message); }
+  return JSON.parse(JSON.stringify(DEFAULT_STORE));
+}
+
+function saveStore() {
+  try { fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2)); }
+  catch(e) { console.error('⚠️ Store save failed:', e.message); }
+}
+
+const store = loadStore();
+
+// ── SMS CONVERSATION MEMORY ───────────────────────────────────────
+const smsConversations = {}; // phone -> [{role, content}]
+const SMS_MAX_HISTORY = 6;   // remember last 6 exchanges per number
+
+function getSmsHistory(phone) {
+  if (!smsConversations[phone]) smsConversations[phone] = [];
+  return smsConversations[phone];
+}
+
+function addSmsMessage(phone, role, content) {
+  const history = getSmsHistory(phone);
+  history.push({ role, content });
+  // Keep only last N messages to avoid token bloat
+  if (history.length > SMS_MAX_HISTORY * 2) {
+    smsConversations[phone] = history.slice(-SMS_MAX_HISTORY * 2);
+  }
+}
 
 // ── NUGGETS ──────────────────────────────────────────────────────
 app.get('/api/nuggets', (req, res) => {
@@ -167,6 +207,7 @@ app.patch('/api/tasks/:id', (req, res) => {
   const task = store.tasks.find(t => t.id === parseInt(req.params.id));
   if (!task) return res.status(404).json({ error: 'not found' });
   task.done = !task.done;
+  saveStore();
   res.json({ success: true, task });
 });
 
@@ -211,22 +252,26 @@ app.post('/api/sms', async (req, res) => {
     if (lower.startsWith('/nugget ')) {
       const text = inbound.slice(8).trim();
       store.nuggets.unshift({ text, date: new Date().toISOString().slice(0,10), source: 'sms', id: Date.now() });
+      saveStore();
       reply = `💡 NUGGET LOGGED: "${text}" — visible in LCARS within 30s`;
 
     } else if (lower.startsWith('/task ')) {
       const text = inbound.slice(6).trim();
       const priority = lower.includes('high') ? 'HIGH' : lower.includes('low') ? 'LOW' : 'MED';
       store.tasks.unshift({ text, priority, done: false, date: new Date().toISOString().slice(0,10), source: 'sms', id: Date.now() });
+      saveStore();
       reply = `✅ TASK ADDED [${priority}]: "${text}" — visible in LCARS within 30s`;
 
     } else if (lower.startsWith('/remind ')) {
       const text = inbound.slice(8).trim();
       store.tasks.unshift({ text: `🔔 ${text}`, priority: 'HIGH', done: false, date: new Date().toISOString().slice(0,10), source: 'sms-remind', id: Date.now() });
+      saveStore();
       reply = `🔔 REMINDER LOGGED: "${text}"`;
 
     } else if (lower.startsWith('/cal ')) {
       const text = inbound.slice(5).trim();
       store.events.unshift({ title: text, date: new Date().toISOString().slice(0,10), source: 'sms', id: Date.now() });
+      saveStore();
       reply = `📅 EVENT CAPTURED: "${text}" — add to calendar when ready`;
 
     } else if (lower === '/brief' || lower === '/status') {
@@ -253,14 +298,17 @@ app.post('/api/sms', async (req, res) => {
       reply = `LCARS SMS COMMANDS:\n/nugget [idea]\n/task [item]\n/remind [text]\n/cal [event]\n/brief — status update\n/nuggets — recent ideas\n/tasks — open tasks\nAnything else = chat with Claude`;
 
     } else {
-      // Free chat — route to Claude
+      // Free chat with Claude — with conversation memory per number
+      const history = getSmsHistory(from);
+      addSmsMessage(from, 'user', inbound);
       const msg = await client.messages.create({
         model: 'claude-sonnet-4-6',
         max_tokens: 200,
-        system: LCARS_SYSTEM + '\nYou are responding via SMS. Keep replies under 160 chars when possible. Plain text only.',
-        messages: [{ role: 'user', content: inbound }]
+        system: LCARS_SYSTEM + '\nResponding via SMS. Keep replies under 300 chars. Plain text only. You remember this conversation.',
+        messages: history
       });
       reply = msg.content[0].text;
+      addSmsMessage(from, 'assistant', reply);
     }
 
   } catch (err) {
