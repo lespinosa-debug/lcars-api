@@ -190,21 +190,18 @@ app.get('/api/store', (req, res) => {
 });
 
 // ── SMS / TWILIO BRIDGE ───────────────────────────────────────────
+const MessagingResponse = require('twilio').twiml.MessagingResponse;
+
+function smsReply(res, text) {
+  const twiml = new MessagingResponse();
+  twiml.message(text);
+  res.type('text/xml').send(twiml.toString());
+}
 
 app.post('/api/sms', async (req, res) => {
   const inbound = req.body.Body?.trim() || '';
   const from = req.body.From || '';
-  const twilioNumber = process.env.TWILIO_PHONE_NUMBER;
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-  const myNumber = process.env.MY_PHONE_NUMBER; // your personal number - only you can use this
-
   console.log(`📱 SMS from ${from}: ${inbound}`);
-
-  // Only respond to your own number
-  if (myNumber && from !== myNumber) {
-    return res.type('text/xml').send('<Response><Message>LCARS: Unauthorized.</Message></Response>');
-  }
 
   const lower = inbound.toLowerCase();
   let reply = '';
@@ -271,8 +268,8 @@ app.post('/api/sms', async (req, res) => {
     reply = 'LCARS ERROR: ' + err.message;
   }
 
-  // Send reply via Twilio
-  res.type('text/xml').send(`<Response><Message>${reply}</Message></Response>`);
+  console.log(`📤 Reply: ${reply.slice(0,60)}`);
+  smsReply(res, reply);
 });
 
 
