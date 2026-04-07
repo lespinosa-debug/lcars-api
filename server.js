@@ -2,9 +2,13 @@ const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
 const cors = require('cors');
 const twilio = require('twilio');
+const { initCheckins, runCheckin } = require('./checkin');
 
 const app = express();
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const twilioClient = (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN)
+  ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
+  : null;
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
@@ -156,6 +160,19 @@ function saveStore() {
 }
 
 const store = loadStore();
+
+// ── SCHEDULED CHECK-INS ──────────────────────────────────────────
+initCheckins(store, twilioClient, saveStore);
+
+// Manual trigger: GET /api/checkin/:type (morning|afternoon|evening|weekly)
+app.get('/api/checkin/:type', async (req, res) => {
+  try {
+    const briefing = await runCheckin(req.params.type, store, twilioClient, saveStore);
+    res.json({ success: true, type: req.params.type, subject: briefing.subject, text: briefing.text });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 
 // ── SMS CONVERSATION MEMORY ───────────────────────────────────────
 const smsConversations = {}; // phone -> [{role, content}]

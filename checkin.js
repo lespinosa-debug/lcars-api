@@ -302,64 +302,48 @@ async function buildEveningBriefing(store) {
   return { text, html, subject: `🌆 LCARS Evening Wrap — ${todayET()}` };
 }
 
+// ── CORE RUNNER ──────────────────────────────────────────────────
+
+const BUILDERS = {
+  morning:   { build: buildMorningBriefing,   label: 'MORNING'   },
+  afternoon: { build: buildAfternoonBriefing, label: 'AFTERNOON' },
+  evening:   { build: buildEveningBriefing,   label: 'EVENING'   },
+  weekly:    { build: buildWeeklyBriefing,    label: 'WEEKLY'    },
+};
+
+async function runCheckin(type, store, twilioClient, saveStore) {
+  const entry = BUILDERS[type];
+  if (!entry) throw new Error(`Unknown check-in type: ${type}`);
+  console.log(`[CHECKIN] Running ${entry.label} briefing...`);
+  const briefing = await entry.build(store);
+  pushToLCARS(store, briefing.text, entry.label);
+  if (saveStore) saveStore(store);
+  await sendEmail(briefing);
+  await sendSMS(twilioClient, briefing.text);
+  return briefing;
+}
+
 // ── MAIN EXPORT ───────────────────────────────────────────────────
 
-module.exports = function initCheckins(store, twilioClient, saveStore) {
+function initCheckins(store, twilioClient, saveStore) {
   console.log('[CHECKIN] Scheduling check-ins (ET timezone)');
 
-  // ── MORNING: 8:15 AM ET Mon–Fri ─────────────────────────────
-  cron.schedule('15 8 * * 1-5', async () => {
-    console.log('[CHECKIN] Running morning briefing...');
-    const briefing = await buildMorningBriefing(store);
-    pushToLCARS(store, briefing.text, 'MORNING');
-    if (saveStore) saveStore(store);
-    await sendEmail(briefing);
-    await sendSMS(twilioClient, briefing.text);
-  }, { timezone: 'America/New_York' });
-
-  // ── MORNING WEEKEND: 8:15 AM ET Sat–Sun ─────────────────────
-  cron.schedule('15 8 * * 0,6', async () => {
-    console.log('[CHECKIN] Running weekend morning briefing...');
-    const briefing = await buildMorningBriefing(store);
-    pushToLCARS(store, briefing.text, 'MORNING');
-    if (saveStore) saveStore(store);
-    await sendEmail(briefing);
-    await sendSMS(twilioClient, briefing.text);
-  }, { timezone: 'America/New_York' });
-
-  // ── AFTERNOON: 2:00 PM ET daily ─────────────────────────────
-  cron.schedule('0 14 * * *', async () => {
-    console.log('[CHECKIN] Running afternoon check-in...');
-    const briefing = await buildAfternoonBriefing(store);
-    pushToLCARS(store, briefing.text, 'AFTERNOON');
-    if (saveStore) saveStore(store);
-    await sendEmail(briefing);
-    await sendSMS(twilioClient, briefing.text);
-  }, { timezone: 'America/New_York' });
-
-  // ── EVENING: 6:00 PM ET daily ───────────────────────────────
-  cron.schedule('0 18 * * *', async () => {
-    console.log('[CHECKIN] Running evening wrap...');
-    const briefing = await buildEveningBriefing(store);
-    pushToLCARS(store, briefing.text, 'EVENING');
-    if (saveStore) saveStore(store);
-    await sendEmail(briefing);
-    await sendSMS(twilioClient, briefing.text);
-  }, { timezone: 'America/New_York' });
-
-  // ── WEEKLY: Sunday 7:00 PM ET ────────────────────────────────
-  cron.schedule('0 19 * * 0', async () => {
-    console.log('[CHECKIN] Running weekly briefing...');
-    const briefing = await buildWeeklyBriefing(store);
-    pushToLCARS(store, briefing.text, 'WEEKLY');
-    if (saveStore) saveStore(store);
-    await sendEmail(briefing);
-    await sendSMS(twilioClient, briefing.text);
-  }, { timezone: 'America/New_York' });
+  const opts = { timezone: 'America/New_York' };
+  // ☀️ Morning 8:15 AM ET (daily — weekday + weekend cover all 7 days)
+  cron.schedule('15 8 * * 1-5', () => runCheckin('morning',   store, twilioClient, saveStore), opts);
+  cron.schedule('15 8 * * 0,6', () => runCheckin('morning',   store, twilioClient, saveStore), opts);
+  // 🔆 Afternoon 2:00 PM ET
+  cron.schedule('0 14 * * *',   () => runCheckin('afternoon', store, twilioClient, saveStore), opts);
+  // 🌆 Evening 6:00 PM ET
+  cron.schedule('0 18 * * *',   () => runCheckin('evening',   store, twilioClient, saveStore), opts);
+  // 🖖 Weekly Sunday 7:00 PM ET
+  cron.schedule('0 19 * * 0',   () => runCheckin('weekly',    store, twilioClient, saveStore), opts);
 
   console.log('[CHECKIN] Scheduled:');
   console.log('  ☀️  Morning   — 8:15 AM ET (daily)');
   console.log('  🔆  Afternoon — 2:00 PM ET (daily)');
   console.log('  🌆  Evening   — 6:00 PM ET (daily)');
   console.log('  🖖  Weekly    — Sunday 7:00 PM ET');
-};
+}
+
+module.exports = { initCheckins, runCheckin };
