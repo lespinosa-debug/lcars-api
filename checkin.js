@@ -241,7 +241,7 @@ async function sendSMS(twilioClient, body) {
     const smsBody = body.length > 1500 ? body.substring(0, 1497) + '...' : body;
     await twilioClient.messages.create({
       body: smsBody,
-      messagingServiceSid: process.env.TWILIO_MESSAGING_SID,
+      from: process.env.TWILIO_FROM,
       to: SMS_TO,
     });
     console.log('[CHECKIN] SMS sent');
