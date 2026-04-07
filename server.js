@@ -166,11 +166,14 @@ initCheckins(store, twilioClient, saveStore);
 
 // Manual trigger: GET /api/checkin/:type (morning|afternoon|evening|weekly)
 app.get('/api/checkin/:type', async (req, res) => {
+  const type = req.params.type;
+  const valid = ['morning','afternoon','evening','weekly'];
+  if (!valid.includes(type)) return res.status(400).json({ ok: false, error: 'Use: morning | afternoon | evening | weekly' });
   try {
-    const briefing = await runCheckin(req.params.type, store, twilioClient, saveStore);
-    res.json({ success: true, type: req.params.type, subject: briefing.subject, text: briefing.text });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+    await runCheckin(type, store, twilioClient, saveStore);
+    res.json({ ok: true, type, message: type + ' briefing fired' });
+  } catch(e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
